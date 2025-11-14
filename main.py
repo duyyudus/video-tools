@@ -9,6 +9,7 @@ from typing import Callable, Iterable
 
 from tools import img2vid, merge_vid, rotate_vid
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -36,6 +37,19 @@ IMG2VID_DEFAULT_FRAMERATE = 2.0
 IMG2VID_DEFAULT_RESOLUTION = "3840x2160"
 MERGE_DEFAULT_RESOLUTION = ""
 BUTTON_HEIGHT_SCALE = 1.5
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".avi",
+    ".m4v",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+    ".mts",
+    ".m2ts",
+    ".ts",
+}
 
 def scale_button_height(button: QPushButton, factor: float = BUTTON_HEIGHT_SCALE) -> None:
     """Increase the button height by the provided scale factor."""
@@ -60,6 +74,39 @@ def select_directories(parent: QWidget) -> list[Path]:
     if dialog.exec() == QFileDialog.Accepted:
         return [Path(path) for path in dialog.selectedFiles()]
     return []
+
+
+class PathDropListWidget(QListWidget):
+    """List widget that emits dropped filesystem paths."""
+
+    paths_dropped = Signal(list)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths: list[Path] = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                paths.append(Path(url.toLocalFile()))
+        if paths:
+            self.paths_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 class FolderProcessingWorker(QObject):
@@ -103,8 +150,9 @@ class BaseProcessingTab(QWidget):
         self.worker_thread: QThread | None = None
         self.worker: FolderProcessingWorker | None = None
 
-        self.input_list = QListWidget()
+        self.input_list = PathDropListWidget()
         self.input_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.input_list.paths_dropped.connect(self.on_paths_dropped)
 
         self.add_button = QPushButton("Add Folders…")
         self.remove_button = QPushButton("Remove Selected")
@@ -154,6 +202,14 @@ class BaseProcessingTab(QWidget):
     def add_folders(self) -> None:
         for folder in select_directories(self):
             self._add_folder(folder)
+
+    def on_paths_dropped(self, paths: list[Path]) -> None:
+        for path in paths:
+            if self.accepts_dropped_path(path):
+                self._add_folder(path)
+
+    def accepts_dropped_path(self, path: Path) -> bool:
+        return path.is_dir()
 
     def _add_folder(self, folder: Path) -> None:
         existing = {self.input_list.item(i).data(Qt.UserRole) for i in range(self.input_list.count())}
@@ -350,7 +406,7 @@ class RotateVideosTab(BaseProcessingTab):
         return [self.rotation_selector, self.add_videos_button]
 
     def add_videos(self) -> None:
-        filter_exts = "*.mp4 *.mov *.mkv *.avi *.m4v *.webm *.mpg *.mpeg *.mts *.m2ts *.ts"
+        filter_exts = " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS))
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Select Video Files",
@@ -359,6 +415,11 @@ class RotateVideosTab(BaseProcessingTab):
         )
         for file_path in files:
             self._add_folder(Path(file_path))
+
+    def accepts_dropped_path(self, path: Path) -> bool:
+        if path.is_dir():
+            return True
+        return path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
 
     def run_processing(self) -> None:
         sources = self.selected_folders()
