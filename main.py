@@ -7,11 +7,12 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
-from tools import img2vid, merge_vid
+from tools import img2vid, merge_vid, rotate_vid
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -125,13 +126,14 @@ class BaseProcessingTab(QWidget):
         self.output_button.clicked.connect(self.choose_output)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Input folders"))
+        self.input_label = QLabel("Input folders")
+        layout.addWidget(self.input_label)
         layout.addWidget(self.input_list)
 
-        button_row = QHBoxLayout()
-        button_row.addWidget(self.add_button)
-        button_row.addWidget(self.remove_button)
-        layout.addLayout(button_row)
+        self.button_row = QHBoxLayout()
+        self.button_row.addWidget(self.add_button)
+        self.button_row.addWidget(self.remove_button)
+        layout.addLayout(self.button_row)
 
         layout.addWidget(QLabel("Output folder"))
         output_row = QHBoxLayout()
@@ -317,6 +319,88 @@ class MergeVideosTab(BaseProcessingTab):
         self.start_worker(folders, task)
 
 
+class RotateVideosTab(BaseProcessingTab):
+    def __init__(self) -> None:
+        super().__init__("Run")
+        self.input_label.setText("Input folders or videos")
+        self.rotation_selector = QComboBox()
+        self.rotation_selector.addItem("Clockwise", "clockwise")
+        self.rotation_selector.addItem("Counter Clockwise", "counter-clockwise")
+        self.add_videos_button = QPushButton("Add Videos…")
+        scale_button_height(self.add_videos_button)
+        self.add_videos_button.clicked.connect(self.add_videos)
+        self.button_row.insertWidget(1, self.add_videos_button)
+        self.output_line.setPlaceholderText(
+            "Optional output folder (blank overwrites originals)"
+        )
+
+        output_hint = QLabel(
+            "Output folder applies to both folders and added videos; "
+            "leave blank to rotate files in place."
+        )
+        output_hint.setWordWrap(True)
+        self.extra_controls_layout.addWidget(output_hint)
+
+        self.extra_controls_layout.addWidget(QLabel("Rotation direction"))
+        self.extra_controls_layout.addWidget(self.rotation_selector)
+
+        self.run_button.clicked.connect(self.run_processing)
+
+    def additional_disable_widgets(self) -> list[QWidget]:
+        return [self.rotation_selector, self.add_videos_button]
+
+    def add_videos(self) -> None:
+        filter_exts = "*.mp4 *.mov *.mkv *.avi *.m4v *.webm *.mpg *.mpeg *.mts *.m2ts *.ts"
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Video Files",
+            "",
+            f"Video Files ({filter_exts});;All Files (*)",
+        )
+        for file_path in files:
+            self._add_folder(Path(file_path))
+
+    def run_processing(self) -> None:
+        sources = self.selected_folders()
+        if not sources:
+            QMessageBox.warning(
+                self,
+                "Missing sources",
+                "Add at least one input folder or video file.",
+            )
+            return
+
+        rotation = self.rotation_selector.currentData()
+        if not isinstance(rotation, str):
+            QMessageBox.warning(self, "Missing rotation", "Choose a rotation direction.")
+            return
+
+        output_dir = self.output_directory()
+
+        missing = [path for path in sources if not path.exists()]
+        if missing:
+            missing_list = "\n".join(str(path) for path in missing)
+            QMessageBox.warning(
+                self,
+                "Missing paths",
+                f"The following paths were not found:\n{missing_list}",
+            )
+            return
+
+        def task(path: Path) -> None:
+            args: list[str] = []
+            if path.is_dir():
+                args.append(str(path))
+            else:
+                args.extend(["--video-file", str(path)])
+            if output_dir is not None:
+                args.extend(["--output-folder", str(output_dir)])
+            args.extend(["--rotation", rotation])
+            rotate_vid.main(args)
+
+        self.start_worker(sources, task)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -324,6 +408,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(ImagesToVideoTab(), "Images to Video")
         tabs.addTab(MergeVideosTab(), "Merge Videos")
+        tabs.addTab(RotateVideosTab(), "Rotate Videos")
         self.setCentralWidget(tabs)
 
 
