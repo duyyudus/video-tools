@@ -130,9 +130,12 @@ def build_ffmpeg_command(
         "-loglevel",
         "info",
     ]
+    needs_hw_frames = use_cuda and resolution is not None
     if use_cuda:
         # Must precede the input specification so ffmpeg treats it as an input option.
-        cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+        cmd.extend(["-hwaccel", "cuda"])
+    if needs_hw_frames:
+        cmd.extend(["-hwaccel_output_format", "cuda"])
     cmd.extend(
         [
             "-f",
