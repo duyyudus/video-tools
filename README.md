@@ -49,7 +49,7 @@ python -m tools.img2vid frames/ output/ -f 24 -s 3840x2160 --cuda
 python -m tools.merge_vid clips/ render/ --codec h264_nvenc --preset p4 --resolution 1920x1080
 ```
 - Accepts `.mp4`, `.mov`, `.mkv`, and other common extensions as long as filenames include a zero-padded index.
-- The command builds an ffmpeg concat list, keeps the audio stream intact, and optionally resizes with CUDA-aware scaling.
+- The command builds an ffmpeg concat list, keeps the audio stream intact, and letterboxes clips to the requested resolution so mixed aspect ratios are preserved (CUDA handles the resize step before padding when available).
 
 #### Rotate videos in bulk
 ```bash
@@ -62,4 +62,3 @@ python -m tools.rotate_vid footage/ rotated/ --rotation clockwise --preset p4
 - Test new folders with a handful of numbered assets before committing larger renders.
 - Watch for non-uniform padding or mixed extensions; the helpers fail fast with actionable error messages so issues can be fixed before ffmpeg runs long jobs.
 - Keep ffmpeg logs from the terminal handy when filing bug reports or PRs.
-

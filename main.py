@@ -35,7 +35,10 @@ from PySide6.QtWidgets import (
 
 IMG2VID_DEFAULT_FRAMERATE = 2.0
 IMG2VID_DEFAULT_RESOLUTION = "3840x2160"
-MERGE_DEFAULT_RESOLUTION = ""
+MERGE_DEFAULT_CODEC = "h264_nvenc"
+MERGE_DEFAULT_PRESET = ""
+MERGE_DEFAULT_FALLBACK_CODEC = "libx264"
+MERGE_DEFAULT_RESOLUTION = "1920x1080"
 BUTTON_HEIGHT_SCALE = 1.5
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -343,16 +346,40 @@ class ImagesToVideoTab(BaseProcessingTab):
 class MergeVideosTab(BaseProcessingTab):
     def __init__(self) -> None:
         super().__init__("Run")
+        self.codec_input = QLineEdit(MERGE_DEFAULT_CODEC)
+        self.preset_input = QLineEdit(MERGE_DEFAULT_PRESET)
+        self.preset_input.setPlaceholderText("Blank uses codec default (p4 for NVENC).")
+        self.fallback_codec_input = QLineEdit(MERGE_DEFAULT_FALLBACK_CODEC)
+        self.fallback_codec_input.setPlaceholderText("Enter 'none' to disable fallback.")
         self.resolution_input = QLineEdit(MERGE_DEFAULT_RESOLUTION)
-        self.resolution_input.setPlaceholderText("Leave blank to inherit source resolution")
+        self.resolution_input.setPlaceholderText("WIDTHxHEIGHT, applied when clips differ.")
 
-        self.extra_controls_layout.addWidget(QLabel("Resolution (optional WIDTHxHEIGHT)"))
-        self.extra_controls_layout.addWidget(self.resolution_input)
+        codec_row = QHBoxLayout()
+        codec_column = QVBoxLayout()
+        codec_column.addWidget(QLabel("Video codec"))
+        codec_column.addWidget(self.codec_input)
+        fallback_column = QVBoxLayout()
+        fallback_column.addWidget(QLabel("Fallback codec"))
+        fallback_column.addWidget(self.fallback_codec_input)
+        preset_column = QVBoxLayout()
+        preset_column.addWidget(QLabel("Preset (optional)"))
+        preset_column.addWidget(self.preset_input)
+        resolution_column = QVBoxLayout()
+        resolution_column.addWidget(QLabel("Resolution"))
+        resolution_column.addWidget(self.resolution_input)
+        for column in (codec_column, fallback_column, preset_column, resolution_column):
+            codec_row.addLayout(column)
+        self.extra_controls_layout.addLayout(codec_row)
 
         self.run_button.clicked.connect(self.run_processing)
 
     def additional_disable_widgets(self) -> list[QWidget]:
-        return [self.resolution_input]
+        return [
+            self.codec_input,
+            self.preset_input,
+            self.fallback_codec_input,
+            self.resolution_input,
+        ]
 
     def run_processing(self) -> None:
         folders = self.selected_folders()
@@ -364,12 +391,19 @@ class MergeVideosTab(BaseProcessingTab):
             QMessageBox.warning(self, "Missing output", "Choose an output folder.")
             return
 
+        codec = self.codec_input.text().strip() or MERGE_DEFAULT_CODEC
+        preset = self.preset_input.text().strip()
+        fallback_codec = self.fallback_codec_input.text().strip()
         resolution = self.resolution_input.text().strip()
 
         def task(folder: Path) -> None:
-            args = [str(folder), str(output_dir)]
+            args: list[str] = [str(folder), str(output_dir), "--codec", codec]
             if resolution:
                 args.extend(["--resolution", resolution])
+            if preset:
+                args.extend(["--preset", preset])
+            if fallback_codec:
+                args.extend(["--fallback-codec", fallback_codec])
             merge_vid.main(args)
 
         self.start_worker(folders, task)
