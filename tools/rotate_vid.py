@@ -60,8 +60,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--preset",
-        default="p4",
-        help="NVENC preset to pass through to ffmpeg (default: p4).",
+        default="p7",
+        help="NVENC preset to pass through to ffmpeg (default: p7).",
     )
     parser.add_argument(
         "--video-file",
@@ -92,6 +92,32 @@ def ensure_ffmpeg_available() -> None:
         raise RuntimeError("ffmpeg executable not found in PATH.")
 
 
+def get_video_bitrate(path: Path) -> str | None:
+    if shutil.which("ffprobe") is None:
+        return None
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=bit_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    try:
+        process = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if process.returncode != 0:
+            return None
+        val = process.stdout.strip()
+        return val if val and val != "N/A" else None
+    except Exception:
+        return None
+
+
 def iter_video_files(folder: Path) -> Iterable[Path]:
     for path in sorted(folder.iterdir()):
         if not path.is_file():
@@ -106,9 +132,10 @@ def build_ffmpeg_command(
     output_path: Path,
     rotation: str,
     preset: str,
+    bitrate: str | None = None,
 ) -> list[str]:
     transpose_value = ROTATION_MAP[rotation]
-    return [
+    cmd = [
         "ffmpeg",
         "-y",
         "-hide_banner",
@@ -122,15 +149,22 @@ def build_ffmpeg_command(
         "h264_nvenc",
         "-preset",
         preset,
+    ]
+    if bitrate:
+        cmd.extend(["-b:v", bitrate])
+
+    cmd.extend([
         "-c:a",
         "copy",
         str(output_path),
-    ]
+    ])
+    return cmd
 
 
 def rotate_video(src: Path, dst: Path, rotation: str, preset: str) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    cmd = build_ffmpeg_command(src, dst, rotation, preset)
+    bitrate = get_video_bitrate(src)
+    cmd = build_ffmpeg_command(src, dst, rotation, preset, bitrate)
     process = subprocess.run(cmd, check=False)
     if process.returncode != 0:
         dst.unlink(missing_ok=True)
