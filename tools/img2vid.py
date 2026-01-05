@@ -81,11 +81,6 @@ def iter_sequence_images(folder: Path) -> Iterable[Path]:
 
 def collect_images(folder: Path) -> List[Path]:
     matches = list(iter_sequence_images(folder))
-    if not matches:
-        raise FileNotFoundError(
-            f"No images with a #### numbering pattern found in {folder}"
-        )
-
     def sort_key(path: Path) -> tuple[int, str]:
         nums = [int(group) for group in SEQUENCE_REGEX.findall(path.stem)]
         number = nums[-1] if nums else -1
@@ -167,6 +162,9 @@ def main(argv: Sequence[str]) -> int:
     output_path = derive_output_path(input_dir, output_dir)
 
     images = collect_images(input_dir)
+    if not images:
+        print(f"Info: No images with a #### numbering pattern found in {input_dir}. Skipping.")
+        return 0
     width, height = parse_resolution(args.resolution)
 
     with TemporaryDirectory() as tmp:

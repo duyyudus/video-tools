@@ -194,10 +194,6 @@ def find_numbered_videos(folder: Path) -> List[Path]:
         if number is None:
             continue
         matches.append((number, entry))
-    if not matches:
-        raise FileNotFoundError(
-            f"No video files matching the #### pattern were found in {folder}."
-        )
     matches.sort(key=lambda item: (item[0], item[1].name))
     return [path for _, path in matches]
 
@@ -355,6 +351,9 @@ def main(argv: Sequence[str]) -> int:
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     videos = find_numbered_videos(input_dir)
+    if not videos:
+        print(f"Info: No video files matching the #### pattern were found in {input_dir}. Skipping.")
+        return 0
 
     uniform_resolution = detect_uniform_resolution(videos)
     if uniform_resolution is not None:
