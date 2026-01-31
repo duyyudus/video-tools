@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
-from tools import img2vid, merge_vid, rotate_vid
+from tools import img2vid, merge_vid, rotate_vid, aspect_ratio
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
@@ -496,6 +496,101 @@ class RotateVideosTab(BaseProcessingTab):
         self.start_worker(sources, task)
 
 
+class AspectRatioTab(BaseProcessingTab):
+    def __init__(self) -> None:
+        super().__init__("Run")
+        self.input_label.setText("Input folders or videos")
+        self.ratio_selector = QComboBox()
+        # Add common aspect ratios. Data values match keys in tools/aspect_ratio.py.
+        self.ratio_selector.addItem("16:9 (Widescreen)", "16:9")
+        self.ratio_selector.addItem("4:3 (Standard)", "4:3")
+        self.ratio_selector.addItem("1:1 (Square)", "1:1")
+        self.ratio_selector.addItem("9:16 (Vertical)", "9:16")
+
+        self.add_videos_button = QPushButton("Add Videos…")
+        scale_button_height(self.add_videos_button)
+        self.add_videos_button.clicked.connect(self.add_videos)
+        self.button_row.insertWidget(1, self.add_videos_button)
+        self.output_line.setPlaceholderText(
+            "Optional output folder (blank overwrites originals)"
+        )
+
+        output_hint = QLabel(
+            "Output folder applies to both folders and added videos; "
+            "leave blank to modify files in place."
+        )
+        output_hint.setWordWrap(True)
+        self.extra_controls_layout.addWidget(output_hint)
+
+        self.extra_controls_layout.addWidget(QLabel("Target aspect ratio"))
+        self.extra_controls_layout.addWidget(self.ratio_selector)
+
+        self.run_button.clicked.connect(self.run_processing)
+
+    def additional_disable_widgets(self) -> list[QWidget]:
+        return [self.ratio_selector, self.add_videos_button]
+
+    def add_videos(self) -> None:
+        filter_exts = " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS))
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Video Files",
+            "",
+            f"Video Files ({filter_exts});;All Files (*)",
+        )
+        for file_path in files:
+            self._add_folder(Path(file_path))
+
+    def accepts_dropped_path(self, path: Path) -> bool:
+        if path.is_dir():
+            return True
+        return path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+
+    def run_processing(self) -> None:
+        sources = self.selected_folders()
+        if not sources:
+            QMessageBox.warning(
+                self,
+                "Missing sources",
+                "Add at least one input folder or video file.",
+            )
+            return
+
+        ratio = self.ratio_selector.currentData()
+        if not isinstance(ratio, str):
+            QMessageBox.warning(self, "Missing ratio", "Choose a target aspect ratio.")
+            return
+
+        output_dir = self.output_directory()
+
+        missing = [path for path in sources if not path.exists()]
+        if missing:
+            missing_list = "\n".join(str(path) for path in missing)
+            QMessageBox.warning(
+                self,
+                "Missing paths",
+                f"The following paths were not found:\n{missing_list}",
+            )
+            return
+
+        # Use p7 as default preset to match rotate_vid.py
+        preset = "p7"
+
+        def task(path: Path) -> None:
+            args: list[str] = []
+            if path.is_dir():
+                args.append(str(path))
+            else:
+                args.extend(["--video-file", str(path)])
+            if output_dir is not None:
+                args.extend(["--output-folder", str(output_dir)])
+            args.extend(["--ratio", ratio])
+            args.extend(["--preset", preset])
+            aspect_ratio.main(args)
+
+        self.start_worker(sources, task)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -504,6 +599,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(ImagesToVideoTab(), "Images to Video")
         tabs.addTab(MergeVideosTab(), "Merge Videos")
         tabs.addTab(RotateVideosTab(), "Rotate Videos")
+        tabs.addTab(AspectRatioTab(), "Stretch/Squash")
         self.setCentralWidget(tabs)
 
 
