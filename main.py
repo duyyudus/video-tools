@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PySide6 GUI wrapper around img2vid.py and merge_vid.py."""
+"""PySide6 GUI wrapper around the video and gallery helper tools."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
-from tools import img2vid, merge_vid, rotate_vid, aspect_ratio
+from tools import aspect_ratio, download_gallery, img2vid, merge_vid, rotate_vid
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QStatusBar,
     QTabWidget,
     QTreeView,
@@ -39,6 +41,7 @@ MERGE_DEFAULT_CODEC = "h264_nvenc"
 MERGE_DEFAULT_PRESET = ""
 MERGE_DEFAULT_FALLBACK_CODEC = "libx264"
 MERGE_DEFAULT_RESOLUTION = "1920x1080"
+GALLERY_DEFAULT_WORKERS = download_gallery.DEFAULT_WORKERS
 BUTTON_HEIGHT_SCALE = 1.5
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -112,6 +115,36 @@ class PathDropListWidget(QListWidget):
             event.ignore()
 
 
+def urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        url = line.strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+class UrlListWidget(QListWidget):
+    """List widget that emits URLs pasted from the clipboard."""
+
+    urls_pasted = Signal(list)
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.matches(QKeySequence.Paste):
+            clipboard = QApplication.clipboard()
+            urls = urls_from_text(clipboard.text())
+            if urls:
+                self.urls_pasted.emit(urls)
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+
 class FolderProcessingWorker(QObject):
     """Run a processing task for each folder on a background thread."""
 
@@ -142,6 +175,39 @@ class FolderProcessingWorker(QObject):
                 return
             self.progress.emit(index, total)
         self.status.emit("All folders processed")
+        self.finished.emit()
+
+
+class UrlProcessingWorker(QObject):
+    """Run a processing task for each URL on a background thread."""
+
+    progress = Signal(int, int)
+    status = Signal(str)
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        urls: Iterable[str],
+        task: Callable[[str], None],
+    ) -> None:
+        super().__init__()
+        self._urls = list(urls)
+        self._task = task
+
+    @Slot()
+    def run(self) -> None:
+        total = len(self._urls)
+        for index, url in enumerate(self._urls, start=1):
+            self.status.emit(f"Downloading {url}")
+            try:
+                self._task(url)
+            except Exception as exc:  # pragma: no cover - GUI thread surface
+                self.error.emit(str(exc))
+                self.finished.emit()
+                return
+            self.progress.emit(index, total)
+        self.status.emit("All galleries downloaded")
         self.finished.emit()
 
 
@@ -591,6 +657,195 @@ class AspectRatioTab(BaseProcessingTab):
         self.start_worker(sources, task)
 
 
+class GalleryDownloadTab(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.worker_thread: QThread | None = None
+        self.worker: UrlProcessingWorker | None = None
+
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://example.com/gallery-page")
+        self.url_list = UrlListWidget()
+        self.url_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.url_list.urls_pasted.connect(self.add_urls)
+
+        self.add_url_button = QPushButton("Add URL")
+        self.remove_url_button = QPushButton("Remove Selected")
+        self.output_line = QLineEdit()
+        self.output_line.setReadOnly(True)
+        self.output_button = QPushButton("Choose Output Folder…")
+        self.title_folder_checkbox = QCheckBox("Save in page-title subfolder")
+        self.title_folder_checkbox.setChecked(True)
+        self.workers_input = QSpinBox()
+        self.workers_input.setRange(1, 64)
+        self.workers_input.setValue(GALLERY_DEFAULT_WORKERS)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.status_bar = QStatusBar()
+        self.status_bar.showMessage("Idle")
+        self.run_button = QPushButton("Download")
+
+        for button in (
+            self.add_url_button,
+            self.remove_url_button,
+            self.output_button,
+            self.run_button,
+        ):
+            scale_button_height(button)
+
+        self.add_url_button.clicked.connect(self.add_url)
+        self.url_input.returnPressed.connect(self.add_url)
+        self.remove_url_button.clicked.connect(self.remove_selected)
+        self.output_button.clicked.connect(self.choose_output)
+        self.run_button.clicked.connect(self.run_processing)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Gallery page URLs"))
+        url_row = QHBoxLayout()
+        url_row.addWidget(self.url_input)
+        url_row.addWidget(self.add_url_button)
+        layout.addLayout(url_row)
+        layout.addWidget(self.url_list)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.remove_url_button)
+        layout.addLayout(button_row)
+
+        layout.addWidget(QLabel("Output folder"))
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_line)
+        output_row.addWidget(self.output_button)
+        layout.addLayout(output_row)
+
+        options_row = QHBoxLayout()
+        workers_column = QVBoxLayout()
+        workers_column.addWidget(QLabel("Parallel image downloads"))
+        workers_column.addWidget(self.workers_input)
+        options_row.addLayout(workers_column)
+        options_row.addWidget(self.title_folder_checkbox)
+        layout.addLayout(options_row)
+
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.status_bar)
+        layout.addWidget(self.run_button)
+
+    def add_url(self) -> None:
+        url = self.url_input.text().strip()
+        if not url:
+            return
+        if not url.startswith(("http://", "https://")):
+            QMessageBox.warning(self, "Invalid URL", "Enter a URL starting with http:// or https://.")
+            return
+        self.add_urls([url])
+        self.url_input.clear()
+
+    def add_urls(self, urls: list[str]) -> None:
+        existing = {self.url_list.item(i).data(Qt.UserRole) for i in range(self.url_list.count())}
+        for url in urls:
+            if url in existing:
+                continue
+            item = QListWidgetItem(url)
+            item.setData(Qt.UserRole, url)
+            self.url_list.addItem(item)
+            existing.add(url)
+
+    def remove_selected(self) -> None:
+        for item in self.url_list.selectedItems():
+            row = self.url_list.row(item)
+            self.url_list.takeItem(row)
+
+    def choose_output(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+        if directory:
+            self.output_line.setText(directory)
+
+    def selected_urls(self) -> list[str]:
+        urls: list[str] = []
+        for idx in range(self.url_list.count()):
+            data = self.url_list.item(idx).data(Qt.UserRole)
+            if isinstance(data, str):
+                urls.append(data)
+        return urls
+
+    def output_directory(self) -> Path | None:
+        text = self.output_line.text().strip()
+        return Path(text) if text else None
+
+    def set_running(self, running: bool) -> None:
+        widgets = [
+            self.url_input,
+            self.url_list,
+            self.add_url_button,
+            self.remove_url_button,
+            self.output_button,
+            self.title_folder_checkbox,
+            self.workers_input,
+            self.run_button,
+        ]
+        for widget in widgets:
+            widget.setEnabled(not running)
+
+    def run_processing(self) -> None:
+        urls = self.selected_urls()
+        if not urls:
+            QMessageBox.warning(self, "Missing URLs", "Add at least one gallery page URL.")
+            return
+        output_dir = self.output_directory()
+        if output_dir is None:
+            QMessageBox.warning(self, "Missing output", "Choose an output folder.")
+            return
+
+        workers = self.workers_input.value()
+        use_title_folder = self.title_folder_checkbox.isChecked()
+
+        def task(url: str) -> None:
+            args = [url, str(output_dir), "--workers", str(workers)]
+            if not use_title_folder:
+                args.append("--no-title-folder")
+            download_gallery.main(args)
+
+        self.start_worker(urls, task)
+
+    def start_worker(self, urls: list[str], task: Callable[[str], None]) -> None:
+        self.progress_bar.setRange(0, len(urls))
+        self.progress_bar.setValue(0)
+        self.status_bar.showMessage("Starting…")
+
+        worker = UrlProcessingWorker(urls, task)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self.on_worker_progress)
+        worker.status.connect(self.status_bar.showMessage)
+        worker.error.connect(self.on_worker_error)
+        worker.finished.connect(self.on_worker_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self.worker_thread = thread
+        self.worker = worker
+        self.set_running(True)
+        thread.start()
+
+    @Slot(int, int)
+    def on_worker_progress(self, current: int, total: int) -> None:
+        self.progress_bar.setMaximum(max(total, 1))
+        self.progress_bar.setValue(current)
+
+    @Slot(str)
+    def on_worker_error(self, message: str) -> None:
+        self.status_bar.showMessage(f"Error: {message}")
+        QMessageBox.critical(self, "Download failed", message)
+
+    @Slot()
+    def on_worker_finished(self) -> None:
+        self.set_running(False)
+        self.worker_thread = None
+        self.worker = None
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -600,6 +855,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(MergeVideosTab(), "Merge Videos")
         tabs.addTab(RotateVideosTab(), "Rotate Videos")
         tabs.addTab(AspectRatioTab(), "Stretch/Squash")
+        tabs.addTab(GalleryDownloadTab(), "Download Gallery")
         self.setCentralWidget(tabs)
 
 
